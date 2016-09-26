@@ -1,9 +1,13 @@
 package query_service.query_pre_processor.query;
 
+import com.tenforce.semtech.SPARQLParser.SPARQL.InvalidSPARQLException;
+import com.tenforce.semtech.SPARQLParser.SPARQL.SPARQLQuery;
+import com.tenforce.semtech.SPARQLParser.SPARQLStatements.BlockStatement;
+import com.tenforce.semtech.SPARQLParser.SPARQLStatements.IStatement;
+import com.tenforce.semtech.SPARQLParser.SPARQLStatements.UpdateBlockStatement;
 import org.openrdf.query.BindingSet;
 import org.openrdf.query.TupleQueryResult;
 import org.springframework.stereotype.Service;
-
 import java.net.URLEncoder;
 import java.util.*;
 
@@ -13,7 +17,7 @@ import java.util.*;
 @Service
 public class QueryService
 {
-    private SPARQLService sparqlService;
+    public SPARQLService sparqlService;
     public QueryService() {
         this.sparqlService = new SPARQLService();
     }
@@ -26,12 +30,266 @@ public class QueryService
      * the triple store on which the query will be exectued is assumed to be the
      * default store for the sparql service.
      *
-     * @param query
+     * @param parsedQuery
      * @return
      */
-    public DifferenceTriples getDifferenceTriples(String query)
+
+    public Map<String, DifferenceTriples> getDifferenceTriples(SPARQLQuery parsedQuery) throws InvalidSPARQLException
     {
+        //DifferenceTriples differenceTriples = new DifferenceTriples();
+        Map<String, DifferenceTriples> differenceTriplesMap = new HashMap<String, DifferenceTriples>();
+
+        String queryPrefix = "";
+        for(String key : parsedQuery.getPrefixes().keySet())
+        {
+            queryPrefix += "PREFIX " + key + ": <" + parsedQuery.getPrefixes().get(key) + ">\n";
+        }
+
+        Map<String, List<Triple>> deleteTriplesMap = new HashMap<String, List<Triple>>();
+        Map<String, List<Triple>> insertTriplesMap = new HashMap<String, List<Triple>>();
+
+        SPARQLQuery clonedQuery = parsedQuery.clone();
+        //parsedQuery.replaceGraphStatements("");
+        //clonedQuery.replaceGraphStatements("");
+
+        for(IStatement statement : parsedQuery.getStatements()) {
+            if (statement.getType().equals(IStatement.StatementType.UPDATEBLOCK)) {
+                UpdateBlockStatement updateBlockStatement = (UpdateBlockStatement)statement;
+
+                String originalGraph = updateBlockStatement.getGraph();
+
+                if(originalGraph.isEmpty())
+                    originalGraph = clonedQuery.getGraph();
+
+                updateBlockStatement.replaceGraphStatements("");
+
+//                String graph = this.sparqlService.getDefaultGraph();
+//                if(!parsedQuery.getGraph().isEmpty())
+//                {
+//                    graph = parsedQuery.getGraph();
+//                }
+//                if(!updateBlockStatement.getGraph().isEmpty())
+//                {
+//                    graph = updateBlockStatement.getGraph();
+//                }
+
+                String extractQuery = queryPrefix + "WITH <" + originalGraph + ">\n";
+                extractQuery += "CONSTRUCT\n{\n";
+
+                for(IStatement innerStatement : updateBlockStatement.getStatements())
+                {
+                    extractQuery += innerStatement.toString() + "\n";
+                }
+
+                extractQuery += "}\nWHERE\n{\n";
+
+                if(updateBlockStatement.getWhereBlock() != null) {
+                    for (IStatement whereStatement : updateBlockStatement.getWhereBlock().getStatements()) {
+                        extractQuery += whereStatement.toString() + "\n";
+                    }
+                }
+
+                extractQuery += "}";
+
+                TupleQueryResult result = this.sparqlService.selectQuery(extractQuery);
+
+                while (result.hasNext()) {
+                    Triple triple = new Triple();
+                    BindingSet bs = result.next();
+                    Iterator<org.openrdf.query.Binding> b = bs.iterator();
+                    while (b.hasNext()) {
+                        org.openrdf.query.Binding bind = b.next();
+                        if (bind.getName().equals("P"))
+                            triple.setPredicate(bind.getValue().stringValue());
+                        if (bind.getName().equals("S"))
+                            triple.setSubject(bind.getValue().stringValue());
+                        if (bind.getName().equals("O"))
+                            triple.setObject(bind.toString().substring(2, bind.toString().length()));
+                    }
+                    List<Triple> insertTriples = null;
+                    List<Triple> deleteTriples = null;
+
+                    insertTriples = insertTriplesMap.get(originalGraph);
+                    deleteTriples = deleteTriplesMap.get(originalGraph);
+
+                    if(insertTriples == null)
+                    {
+                        insertTriples = new ArrayList<Triple>();
+                        insertTriplesMap.put(originalGraph, insertTriples);
+                    }
+
+                    if(deleteTriples == null)
+                    {
+                        deleteTriples = new ArrayList<Triple>();
+                        deleteTriplesMap.put(originalGraph, deleteTriples);
+                    }
+
+                    if (updateBlockStatement.getUpdateType().equals(BlockStatement.BLOCKTYPE.INSERT)) {
+                        insertTriples.add(triple);
+                    }
+                    else
+                    {
+                        deleteTriples.add(triple);
+                    }
+                }
+            }
+        }
+
+        for(String graph : deleteTriplesMap.keySet()) {
+            DifferenceTriples differenceTriples = differenceTriplesMap.get("graph");
+            if (differenceTriples == null) {
+                differenceTriples = new DifferenceTriples();
+                differenceTriplesMap.put(graph, differenceTriples);
+            }
+
+            List<Triple> deleteTriples = deleteTriplesMap.get(graph);
+
+            differenceTriples.getAllDeleteTriples().addAll(deleteTriples);
+
+            // now insert the delete triples in a temporary graph
+            String deleteGraph = "<http://tmp-delete-graph>";
+
+            // first clear the graph
+            this.sparqlService.deleteQuery("with " + deleteGraph + " delete {?s ?p ?o} where {?s ?p ?o.}");
+
+            String tmpDeleteInsert = queryPrefix + "\n with " + deleteGraph + "\ninsert data\n{\n";
+            for (Triple t : deleteTriples)
+//            tmpDeleteInsert += "<" + t.getSubject() + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+                if (t.getObjectType().endsWith(".org/2001/XMLSchema#string>"))
+                    tmpDeleteInsert += "<" + t.getSubject().substring(1, t.getSubject().length()) + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+                else
+                    tmpDeleteInsert += "<" + t.getSubject().substring(1, t.getSubject().length()) + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+
+            tmpDeleteInsert += "}";
+
+            // then we store it
+            this.sparqlService.insertQuery(tmpDeleteInsert);
+
+            // then we check what would be deleted by doing an intersection between the
+            // real graph and our tmp delete graph
+            String newQuery = "SELECT ?s ?p ?o WHERE { GRAPH <" + graph + "> { ?s ?p ?o . } .\n GRAPH " + deleteGraph + " { ?s ?p ?o . } .\n}";
+
+            List<Triple> confirmedDeletes = new ArrayList<Triple>();
+
+            try {
+                String url = "http://localhost:8890/sparql?query=" + URLEncoder.encode(newQuery, "UTF-8");
+                confirmedDeletes = this.sparqlService.getTriplesViaGet(url);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+            differenceTriples.setEffectiveDeleteTriples(new HashSet<Triple>(confirmedDeletes));
+        }
+
+
+
+        /*
+
+
+         */
+
+
+
+        for(String graph : insertTriplesMap.keySet()) {
+            DifferenceTriples differenceTriples = differenceTriplesMap.get("graph");
+            if (differenceTriples == null) {
+                differenceTriples = new DifferenceTriples();
+                differenceTriplesMap.put(graph, differenceTriples);
+            }
+
+            List<Triple> insertTriples = insertTriplesMap.get(graph);
+
+            differenceTriples.getAllInsertTriples().addAll(insertTriples);
+
+            // now insert the delete triples in a temporary graph
+            String insertGraph = "<http://tmp-insert-graph>";
+
+            // first clear the graph
+            this.sparqlService.deleteQuery("with " + insertGraph + " delete {?s ?p ?o} where {?s ?p ?o.}");
+
+            String tmpInsertInsert = queryPrefix + "\n with " + insertGraph + "\ninsert data\n{\n";
+            for (Triple t : insertTriples)
+//            tmpDeleteInsert += "<" + t.getSubject() + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+                if (t.getObjectType().endsWith(".org/2001/XMLSchema#string>"))
+                    tmpInsertInsert += "<" + t.getSubject().substring(1, t.getSubject().length()) + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+                else
+                    tmpInsertInsert += "<" + t.getSubject().substring(1, t.getSubject().length()) + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+
+            tmpInsertInsert += "}";
+
+            // then we store it
+            this.sparqlService.insertQuery(tmpInsertInsert);
+
+            // then we check what would be inserted by doing an intersection between the
+            // real graph and our tmp insert graph
+            String newQuery = "SELECT ?s ?p ?o WHERE { GRAPH <" + graph + "> { ?s ?p ?o . } .\n GRAPH " + insertGraph + " { ?s ?p ?o . } .\n}";
+
+            List<Triple> confirmedInserts = new ArrayList<Triple>();
+
+            try {
+                String url = "http://localhost:8890/sparql?query=" + URLEncoder.encode(newQuery, "UTF-8");
+                confirmedInserts = this.sparqlService.getTriplesViaGet(url);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+            differenceTriples.setEffectiveInsertTriples(new HashSet<Triple>(confirmedInserts));
+        }
+
+//        // then we insert the insert triples in a temporary graph
+//        String insertGraph = "<http://tmp-insert-graph>";
+//
+//        // again first clear it
+//        this.sparqlService.deleteQuery("with " + insertGraph + " delete {?s ?p ?o} where {?s ?p ?o.}");
+//
+//        String tmpInsertInsert = queryPrefix + "\n with " + insertGraph + "\ninsert data\n{\n";
+//        for(Triple t : insertTriples)
+////                tmpInsertInsert += "<" + t.getSubject() + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+//            if(t.getObjectType().endsWith("w3.org/2001/XMLSchema#string>"))
+//                tmpInsertInsert += "<" + t.getSubject().substring(1, t.getSubject().length()) + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+//            else
+//                tmpInsertInsert += "<" + t.getSubject().substring(1, t.getSubject().length()) + "> <" + t.getPredicate() + "> " + t.getObjectAsString() + " .\n";
+//
+//        tmpInsertInsert += "}";
+//
+//        // then we store it
+//        this.sparqlService.insertQuery(tmpInsertInsert);
+//
+//        //differenceTriples.setAllDeleteTriples(new HashSet<Triple>(deleteTriples));
+//        differenceTriples.setAllInsertTriples(new HashSet<Triple>(insertTriples));
+//
+//
+//
+//
+//
+//        // same thing for inserts
+//        List<Triple> confirmedInserts = new ArrayList<Triple>();
+//        newQuery = "SELECT ?s ?p ?o WHERE {graph " + insertGraph + " {?s ?p ?o.}.\nminus\n{\ngraph <" + this.sparqlService.getDefaultGraph() + "> {?s ?p ?o.}.}\n}";
+//        try
+//        {
+//            String url = "http://localhost:8890/sparql?query=" + URLEncoder.encode(newQuery, "UTF-8");
+//            confirmedInserts = this.sparqlService.getTriplesViaGet(url);
+//        } catch (Exception e)
+//        {
+//            e.printStackTrace();
+//        }
+//
+//        differenceTriples.setEffectiveInsertTriples(new HashSet<Triple>(confirmedInserts));
+
+        return differenceTriplesMap;
+
+    }
+/*
+    public DifferenceTriples getDifferenceTriples(String query) throws InvalidSPARQLException
+    {
+        SPARQLQuery pq = new SPARQLQuery(query);
+
         DifferenceTriples differenceTriples = new DifferenceTriples();
+
+        if(!pq.getType().name().equals("UPDATE"))
+        {
+            return differenceTriples;
+        }
 
         // extract all prefixes
         Map<String, String> prefixes = getPrefixes(query);
@@ -154,6 +412,9 @@ public class QueryService
         // then we store it
         this.sparqlService.insertQuery(tmpInsertInsert);
 
+        differenceTriples.setAllDeleteTriples(new HashSet<Triple>(deleteTriples));
+        differenceTriples.setAllInsertTriples(new HashSet<Triple>(insertTriples));
+
 
         // then we check what would be deleted by doing an intersection between the
         // real graph and our tmp delete graph
@@ -170,7 +431,7 @@ public class QueryService
             e.printStackTrace();
         }
 
-        differenceTriples.setDeleteTriples(new HashSet<Triple>(confirmedDeletes));
+        differenceTriples.setEffectiveDeleteTriples(new HashSet<Triple>(confirmedDeletes));
 
 
         // same thing for inserts
@@ -185,10 +446,10 @@ public class QueryService
             e.printStackTrace();
         }
 
-        differenceTriples.setInsertTriples(new HashSet<Triple>(confirmedInserts));
+        differenceTriples.setEffectiveInsertTriples(new HashSet<Triple>(confirmedInserts));
 
         return differenceTriples;
-    }
+    }*/
 
     /**
      * returns a set with all unknowns in the query blocks

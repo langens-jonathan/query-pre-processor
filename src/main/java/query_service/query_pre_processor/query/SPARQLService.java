@@ -10,11 +10,13 @@ import org.openrdf.repository.RepositoryConnection;
 import virtuoso.sesame4.driver.VirtuosoRepository;
 
 import java.io.BufferedReader;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.List;
@@ -35,7 +37,7 @@ public class SPARQLService
 
     private String pwd = "dba";
 
-    private String defgraph = "http://test";//"http://localhost.org/data";
+    private String defgraph = "http://mu.semte.ch/application";
 
     /**
      * Other class member variables
@@ -135,6 +137,8 @@ public class SPARQLService
     protected TupleQueryResult selectQuery(String query)
     {
         try {
+            if(connection==null)
+                this.initializeConnection();
             TupleQuery tupleQuery = connection.prepareTupleQuery(org.openrdf.query.QueryLanguage.SPARQL, query);
             return tupleQuery.evaluate();
         } catch(Exception e)
@@ -152,6 +156,8 @@ public class SPARQLService
     protected void insertQuery(String query)
     {
         try{
+            if(connection==null)
+                this.initializeConnection();
             Update update = connection.prepareUpdate(org.openrdf.query.QueryLanguage.SPARQL, query);
             update.execute();
             connection.commit();
@@ -178,7 +184,7 @@ public class SPARQLService
      * the url is supposed to be formatted as follows
      *   http://localhost:8890/sparql?query=URL_ENCODED_SELECT_QUERY
      *
-     * TODO this method is still quiet ugly, the main reason for implementing this is that
+     * TODO this method is still quite ugly, the main reason for implementing this is that
      * TODO the sesame library does not allow you to post a query with 2 graphs
      *
      * TODO this method is also not generic and will only work for the specific use case for which it was implemented
@@ -258,5 +264,99 @@ public class SPARQLService
         }
 
         return triples;
+    }
+
+    @SuppressWarnings("unchecked")
+    public String getSPARQLResponse(String url, Map<String,String> headers) throws MalformedURLException, IOException
+    {
+        URL u = new URL(url);
+        HttpURLConnection connection = (HttpURLConnection) u.openConnection();
+
+        // just want to do an HTTP GET here
+        connection.setRequestMethod("GET");
+
+        String [] blackList = {"accept-encoding"};
+
+        //connection.setRequestProperty("Accept", "application/json");
+        for(String headerName : headers.keySet())
+        {
+            boolean blackListed = false;
+            for(String b : blackList)
+            {
+                if(headerName.toLowerCase().equals(b.toLowerCase()))
+                    blackListed = true;
+            }
+            if(!blackListed)
+                connection.setRequestProperty(headerName, headers.get(headerName));
+        }
+
+        // give it 15 seconds to respond
+        connection.setReadTimeout(15*1000);
+        connection.connect();
+
+        BufferedReader reader = null;
+        StringBuilder stringBuilder;
+
+        // read the output from the server
+        reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+        stringBuilder = new StringBuilder();
+
+        String line = null;
+        while ((line = reader.readLine()) != null)
+        {
+            stringBuilder.append(line + "\n");
+        }
+        return stringBuilder.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    public String postSPARQLResponse(String url, String query, Map<String, String> headers) throws MalformedURLException, IOException
+    {
+        URL obj = new URL(url);
+
+        HttpURLConnection con = (HttpURLConnection) obj.openConnection();
+
+        //add reuqest header
+        con.setRequestMethod("POST");
+        //con.setRequestProperty("Accept", "application/json");
+
+        String [] blackList = {"accept-encoding"};
+
+        //connection.setRequestProperty("Accept", "application/json");
+        for(String headerName : headers.keySet())
+        {
+            boolean blackListed = false;
+            for(String b : blackList)
+            {
+                if(headerName.toLowerCase().equals(b.toLowerCase()))
+                    blackListed = true;
+            }
+            if(!blackListed)
+                con.setRequestProperty(headerName, headers.get(headerName));
+        }
+
+        // Send post request
+        con.setDoOutput(true);
+        DataOutputStream wr = new DataOutputStream(con.getOutputStream());
+        wr.writeBytes("query=" + URLEncoder.encode(query, "UTF-8"));
+        wr.flush();
+        wr.close();
+
+        int responseCode = con.getResponseCode();
+
+        BufferedReader in = new BufferedReader(
+                new InputStreamReader(con.getInputStream()));
+        String inputLine;
+        StringBuffer response = new StringBuffer();
+
+        while ((inputLine = in.readLine()) != null) {
+            response.append(inputLine);
+        }
+        in.close();
+
+        //print result
+        System.out.println(response.toString());
+
+        return (response.toString());
     }
 }

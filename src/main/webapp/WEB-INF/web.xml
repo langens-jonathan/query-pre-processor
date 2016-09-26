@@ -18,7 +18,7 @@
   </context-param>
   <context-param>
     <param-name>contextConfigLocation</param-name>
-    <param-value>query_pre_processor.query_pre_processor.config.RootConfiguration</param-value>
+    <param-value>query_service.query_pre_processor.config.RootConfiguration</param-value>
   </context-param>
 
   <servlet>
@@ -30,7 +30,7 @@
     </init-param>
     <init-param>
       <param-name>contextConfigLocation</param-name>
-      <param-value>query_pre_processor.query_pre_processor.config.WebConfiguration</param-value>
+      <param-value>query_service.query_pre_processor.config.WebConfiguration</param-value>
     </init-param>
 
     <load-on-startup>1</load-on-startup>

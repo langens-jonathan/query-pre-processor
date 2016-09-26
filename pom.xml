@@ -22,6 +22,12 @@
   </properties>
 
   <dependencies>
+
+    <dependency>
+      <groupId>com.tenforce.semtech</groupId>
+      <artifactId>SPARQL-parser</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework</groupId>
       <artifactId>spring-webmvc</artifactId>
@@ -91,6 +97,13 @@
 
   <dependencyManagement>
     <dependencies>
+
+      <dependency>
+        <groupId>com.tenforce.semtech</groupId>
+        <artifactId>SPARQL-parser</artifactId>
+        <version>0.0.3</version>
+      </dependency>
+
       <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava</artifactId>
